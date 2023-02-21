@@ -16,20 +16,6 @@ For each non-preamble chunk:
 
  - Call the Codex API with the constructed prompt using the user’s GTP_API_KEY. API calls look like:
 
-    ```
-    data = json.dumps({
-        "prompt": prompt,
-        "max_tokens": 1500,
-        "temperature": 0,
-        "stop": "#autodoc"
-    })
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer {}'.format(GPT_API_KEY)
-    }
-    response = requests.post('https://api.openai.com/v1/engines/davinci-codex/completions', headers=headers, data=data)
-    ```
-
     The response is json, and the output we want is in ['choices'][0]['text'].
 
  - Format the response text as a docstring by:
@@ -58,23 +44,8 @@ Functions called by main:
     - the line '#autodoc: A comprehensive PEP 257 Google style doctring, including a brief one-line summary of the function.'.
 
 - get_response
-    Call the Codex API with the constructed prompt using the user’s GTP_API_KEY. API calls look like:
+    Call the Codex API with the constructed prompt using the user’s GTP_API_KEY. 
 
-    ```
-    data = json.dumps({
-        "prompt": prompt,
-        "max_tokens": 1500,
-        "temperature": 0,
-        "stop": "#autodoc"
-    })
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer {}'.format(GPT_API_KEY)
-    }
-    response = requests.post('https://api.openai.com/v1/engines/davinci-codex/completions', headers=headers, data=data)
-    ```
-
-    The response is json, and the output we want is in ['choices'][0]['text'].
 
 - extract_function_code
     Returns only the code of the function, without the funciton definition line or the docstring
@@ -95,6 +66,8 @@ import os
 import re
 import requests
 import sys
+import time
+import openai
 
 GPT_API_KEY = os.environ['GPT_API_KEY']
 
@@ -140,16 +113,22 @@ def get_code_chunks(code):
         chunks (list): The code split into chunks beginning with each function definition line.
 
     """
-    chunks = []
-    for chunk in code.split('\n\n'):
-        #print("Chunk:\n",chunk)
-        if re.match(r'\s*\n*def ', chunk):
-        # If the function definition line is indented (starts with whitespace), skip it.
-            if re.match(r'\s+def ', chunk):
-                pass
-            else:
-                chunks.append(chunk)
+    lines = code.split('\n')
+    last = len(lines)
+    idx = []
+    idx.append(0)
+    for i in range(last):
+        li = lines[i]
+        if 'def ' in li and '(' in li and ':' in li:
+            idx.append(i)
+    idx.append(last)
 
+    chunks = []
+    il = len(idx)
+    for i in range(il):
+        if idx[i]:
+            chunk='\n'.join(lines[idx[i-1]:idx[i]])
+            chunks.append(chunk)
     return chunks
 
 def get_prompt(code_chunk):
@@ -166,33 +145,18 @@ def get_prompt(code_chunk):
         prompt (str): A prompt for the user.
 
     """
-    #print(code_chunk.split('\n')[0])
     prompt = '\n\n'.join([
         open('autodocstring-example.txt').read(),
         code_chunk,
         '#autodoc: A comprehensive PEP 257 Google style doctring, including a brief one-line summary of the function.',
+        '"""',
     ])
     return prompt
 
 def get_response(prompt):
     """
-    Call the Codex API with the constructed prompt using the user’s GTP_API_KEY. API calls look like:
+    Call the Codex API with the constructed prompt using the user’s GTP_API_KEY. 
 
-    ```
-    data = json.dumps({
-        "prompt": prompt,
-        "max_tokens": 1500,
-        "temperature": 0,
-        "stop": "#autodoc"
-    })
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer {}'.format(GPT_API_KEY)
-    }
-    response = requests.post('https://api.openai.com/v1/engines/davinci-codex/completions', headers=headers, data=data)
-    ```
-
-    The response is json, and the output we want is in ['choices'][0]['text'].
 
     Parameters:
         prompt (str): A prompt for the user.
@@ -201,24 +165,21 @@ def get_response(prompt):
         response (str): The response from the API.
 
     """
-    data = json.dumps({
-        "prompt": prompt,
-        "max_tokens": 1500,
-        "temperature": 0,
-        "stop": "#autodoc"
-    })
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer {}'.format(GPT_API_KEY)
-    }
-    response = requests.post('https://api.openai.com/v1/engines/davinci-codex/completions', headers=headers, data=data)
-    try:
-        response = response.json()['choices'][0]['text']
-    except KeyError:
-        print(response.json(), file=sys.stderr)
-        #sys.exit(1)
-    return response
 
+    openai.api_key = os.getenv("GPT_API_KEY")
+
+    response = openai.Completion.create(
+                     model="code-davinci-002",
+                     prompt = prompt,
+                     temperature=0,
+                     max_tokens=3600,
+                     top_p=1.0,
+                     frequency_penalty=0.0,
+                     presence_penalty=0.0,
+                     stop="#autodoc",
+                     )
+    resp = response.choices[0].text
+    return resp
 
 def extract_function_code(code_chunk):
     """
@@ -277,33 +238,32 @@ def main():
         None
 
     """
+    #import pdb; pdb.set_trace()
+
     code = get_code()
     chunks = get_code_chunks(code)
     for chunk in chunks:
         prompt = get_prompt(chunk)
-        #print(prompt)
+        #print('prompt:', prompt)
+        response=None
         try:
+            time.sleep(1)
             response = get_response(prompt)
-        except json.decoder.JSONDecodeError:
-            continue
+        except Exception as e:
+            print("EXCEPTION: %s" % e) 
+            #print("prompt was %s" % prompt)
         # If the response is empty, continue to the next chunk
         if not response:
-            continue
-        #print("response:",response)
-        function_code = extract_function_code(chunk)
-        #print("function_code:",function_code)
-        new_chunk = '\n'.join([
-            response,
-            function_code
-        ])
-        # Remove any repeated blank lines
-        new_chunk = re.sub(r'\n+\s*\n+\s*\n+', '\n\n', new_chunk)
-
-        #print("new_chunk:",new_chunk)
-        print(new_chunk)
-        #sys.exit()
-        code = code.replace(chunk, new_chunk)
-    output_code(code)
+            print("EMPTY RESPONSE")
+            #print("prompt was %s" % prompt)
+        header="DEF NOT FOUND"
+        for line in chunk.split('\n'):
+            if 'def ' in line:
+                header = line
+                break
+        print("#GENERATED DOCSTRING FOR  %s" % header)
+        print("""\"\"\"\n%s\n\"\"\"\n""" % response)
+        time.sleep(10)
 
 if __name__ == '__main__':
     main()
